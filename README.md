@@ -33,6 +33,7 @@
    - Press your set hotkey in any application; the main window will appear.
    - Enter your **memorized passphrase** and **salt**. (The passphrase and salt can be any combination of Chinese, English, mixed language, or symbols. However, since the purpose of this tool is to facilitate remembering passwords, please choose an appropriate method.)
    - Press `Enter` or click "Confirm and Type", and the program will automatically input the SM3 hash value (a 64-character hexadecimal string).
+   ![](images/using.png)
 
 4. **Resetting the Hotkey**
    - Click the "Reset Hotkey" button in the main window.
