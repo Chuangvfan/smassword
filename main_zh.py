@@ -6,6 +6,8 @@ import threading
 from gmssl import sm3, func
 import json
 import os
+import base64
+import string
 
 # 配置文件名
 CONFIG_FILE = "smassword_config.json"
@@ -58,19 +60,19 @@ class HotkeyRecorder:
     def _finish_recording(self, hotkey):
         config_data = {"hotkey": hotkey}
         try:
-            # 写入配置后立即关闭文件
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f)
 
             self.status_label.config(text=f"成功! 热键已设为: {hotkey}", foreground="green")
             self.root.update()
             time.sleep(1)
-
             self.root.destroy()
             self.on_complete(hotkey)
 
         except Exception as e:
-            messagebox.showerror("错误", f"保存配置文件失败: {e}")
+            # 这里的异常捕获是为了防止文件写入失败
+            # 但如果 on_complete 里的代码报错，也会被这里捕获
+            messagebox.showerror("错误", f"发生错误: {e}")
             self.btn.config(state="normal")
 
     def run(self):
@@ -87,7 +89,7 @@ class SM3AutoTyper:
         self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
         self.root.withdraw()
 
-        width, height = 400, 180
+        width, height = 400, 220
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         x = (screen_width - width) // 2
@@ -117,23 +119,32 @@ class SM3AutoTyper:
         ttk.Label(main_frame, text="盐值(Salt):").grid(row=2, column=0, sticky="w")
         self.salt_entry = ttk.Entry(main_frame, width=28, show="*")
         self.salt_entry.grid(row=2, column=1, pady=5, padx=5)
-        self.salt_entry.bind('<Return>', lambda e: self.perform_type())
+        self.salt_entry.bind('<Return>', lambda e: self.len_entry.focus_set())
 
         self.show_salt_var = tk.BooleanVar(value=False)
         self.btn_eye_salt = ttk.Checkbutton(main_frame, text="👁", variable=self.show_salt_var,
                                             style='Toolbutton', command=self.toggle_salt_visibility)
         self.btn_eye_salt.grid(row=2, column=2, padx=2)
 
-        # === 3. 按钮 ===
+        # === 3. 长度 ===
+        ttk.Label(main_frame, text="密码长度:").grid(row=3, column=0, sticky="w")
+        self.len_var = tk.StringVar(value="16")
+        self.len_entry = ttk.Spinbox(main_frame, from_=8, to=32, textvariable=self.len_var, width=5)
+        self.len_entry.grid(row=3, column=1, sticky="w", padx=5, pady=5)
+        self.len_entry.bind('<Return>', lambda e: self.perform_type())
+
+        ttk.Label(main_frame, text="(含大小写+符号)").grid(row=3, column=1, padx=(60, 0))
+
+        # === 4. 按钮 ===
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=3, column=0, columnspan=3, pady=15)
+        btn_frame.grid(row=4, column=0, columnspan=3, pady=15)
 
         ttk.Button(btn_frame, text="确认并输入 (Enter)", command=self.perform_type).pack(side='left', padx=5)
         ttk.Button(btn_frame, text="隐藏", command=self.hide_window).pack(side='left', padx=5)
         ttk.Button(btn_frame, text="重置热键", command=self.reset_config).pack(side='left', padx=5)
 
         self.status_label = ttk.Label(main_frame, text="等待输入...", foreground="gray", font=("Arial", 8))
-        self.status_label.grid(row=4, column=0, columnspan=3)
+        self.status_label.grid(row=5, column=0, columnspan=3)
 
     def toggle_text_visibility(self):
         if self.show_text_var.get():
@@ -165,7 +176,6 @@ class SM3AutoTyper:
         self.root.withdraw()
 
     def reset_config(self):
-        """重置配置文件并重启"""
         if messagebox.askyesno("重置", "确定要重置热键吗？程序将关闭，下次启动时需重新录制。"):
             try:
                 if os.path.exists(CONFIG_FILE):
@@ -178,6 +188,10 @@ class SM3AutoTyper:
     def perform_type(self):
         text = self.text_entry.get()
         salt = self.salt_entry.get()
+        try:
+            length = int(self.len_var.get())
+        except:
+            length = 16
 
         if not text:
             self.status_label.config(text="请输入记忆口令！", foreground="red")
@@ -186,25 +200,59 @@ class SM3AutoTyper:
         try:
             msg_bytes = text.encode('utf-8')
             salt_bytes = salt.encode('utf-8')
-            hash_hex = sm3.sm3_hash(func.bytes_to_list(msg_bytes + salt_bytes))
+            hex_str = sm3.sm3_hash(func.bytes_to_list(msg_bytes + salt_bytes))
+            final_password = self._generate_complex_pwd(hex_str, length)
         except Exception as e:
             self.status_label.config(text=f"错误: {str(e)}", foreground="red")
+            print(e)
             return
 
         self.hide_window()
-        threading.Thread(target=self._type_hash, args=(hash_hex,)).start()
+        threading.Thread(target=self._type_hash, args=(final_password,)).start()
+
+    def _generate_complex_pwd(self, hex_hash, length):
+        raw_bytes = bytes.fromhex(hex_hash)
+        b64_bytes = base64.b64encode(raw_bytes)
+        b64_str = b64_bytes.decode('utf-8')
+
+        candidate = list(b64_str[:length])
+
+        upper_pool = string.ascii_uppercase
+        lower_pool = string.ascii_lowercase
+        digit_pool = string.digits
+        symbol_pool = "!@#$%&*"
+
+        hex_ptr = len(hex_hash) - 1
+
+        def ensure_category(pool, replace_index):
+            nonlocal hex_ptr
+            if not any(c in pool for c in candidate):
+                seed_hex = hex_hash[hex_ptr - 1: hex_ptr + 1]
+                seed_int = int(seed_hex, 16)
+                hex_ptr -= 2
+                char_to_inject = pool[seed_int % len(pool)]
+                idx = replace_index % len(candidate)
+                candidate[idx] = char_to_inject
+
+        ensure_category(upper_pool, 0)
+        ensure_category(lower_pool, 1)
+        ensure_category(digit_pool, 2)
+        ensure_category(symbol_pool, 3)
+
+        return "".join(candidate)
 
     def _type_hash(self, text_to_type):
-        time.sleep(0.2)
+        time.sleep(0.3)
         keyboard.write(text_to_type)
-        print(f"已输入哈希: {text_to_type[:6]}...")
+        print(f"已输入密码: {text_to_type[:3]}***")
 
+    # ================= 修复部分：补回了 run 方法 =================
     def run(self):
         self.root.mainloop()
+    # ==========================================================
 
 
 def start_main_app(hotkey):
-    """启动主程序逻辑"""
     print(f"✅ 正在启动主程序，监听热键: {hotkey}")
     app = SM3AutoTyper(hotkey)
 
@@ -220,8 +268,6 @@ def start_main_app(hotkey):
 
 if __name__ == "__main__":
     saved_hotkey = None
-
-    # 1. 尝试读取配置文件
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -231,7 +277,6 @@ if __name__ == "__main__":
             print(f"读取配置出错: {e}")
             saved_hotkey = None
 
-    # 2. 根据读取结果决定 启动主程序 还是 录制热键
     if saved_hotkey:
         start_main_app(saved_hotkey)
     else:
